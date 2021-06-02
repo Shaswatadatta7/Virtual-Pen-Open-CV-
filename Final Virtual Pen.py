@@ -1,14 +1,18 @@
-import cv2
 import numpy as np
+import cv2
 import time
 
 load_from_disk = True
 if load_from_disk:
     penval = np.load('penval.npy')
 
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(1)
 cap.set(3,1280)
 cap.set(4,720)
+
+# Load these 2 images and resize them to the same size.
+pen_img = cv2.resize(cv2.imread('pen.png',1), (50, 50))
+eraser_img = cv2.resize(cv2.imread('eraser.png',1), (50, 50))
 
 kernel = np.ones((5,5),np.uint8)
 
@@ -16,7 +20,19 @@ kernel = np.ones((5,5),np.uint8)
 cv2.namedWindow('image', cv2.WINDOW_NORMAL)
 
 # This is the canvas on which we will draw upon
-canvas=None
+canvas = None
+
+# Create a background subtractor Object
+backgroundobject = cv2.createBackgroundSubtractorMOG2( detectShadows = False )
+
+# This threshold determines the amount of disruption in background.
+background_threshold = 600
+
+# A variable which tells you if you're using a pen or an eraser.
+switch = 'Pen'
+
+# With this variable we will monitor the time between previous switch.
+last_switch = time.time()
 
 # Initilize x1,y1 points
 x1,y1=0,0
@@ -24,19 +40,38 @@ x1,y1=0,0
 # Threshold for noise
 noiseth = 800
 
-# Threshold for wiper, the size of the contour must be bigger than for us to clear the canvas
+# Threshold for wiper, the size of the contour must be bigger than this for us to clear the canvas
 wiper_thresh = 40000
 
-# A varaible which tells when to clear canvas, if its True then we clear the canvas
+# A varaible which tells when to clear canvas
 clear = False
 
 while(1):
-    _ , frame = cap.read()
-    frame = cv2.flip( frame, 1 )
+    _, frame = cap.read()
+    frame = cv2.flip(frame, 1 )
     
     # Initilize the canvas as a black image
     if canvas is None:
         canvas = np.zeros_like(frame)
+        
+    # Take the top left of the frame and apply the background subtractor there    
+    top_left = frame[0: 50, 0: 50]
+    fgmask = backgroundobject.apply(top_left)
+    
+    # Note the number of pixels that are white, this is the level of disruption.
+    switch_thresh = np.sum(fgmask==255)
+    
+    # If the disruption is greater than background threshold and there has been some time after the previous switch then you 
+    # can change the object type.
+    if switch_thresh > background_threshold  and (time.time() - last_switch) > 1:
+        
+        # Save the time of the switch. 
+        last_switch = time.time()
+        
+        if switch == 'Pen':
+            switch = 'Eraser'
+        else:
+            switch = 'Pen'
 
     # Convert BGR to HSV
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -53,14 +88,14 @@ while(1):
     
     mask = cv2.inRange(hsv, lower_range, upper_range)
     
-    # perform the morphological operations to get rid of the noise
+    # Perform morphological operations to get rid of the noise
     mask = cv2.erode(mask,kernel,iterations = 1)
     mask = cv2.dilate(mask,kernel,iterations = 2)
     
-    # Find Contours.
+    # Find Contours
     contours, hierarchy = cv2.findContours(mask,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
     
-    # Make sure there is a contour present and also its size is bigger than the noise threshold.
+    # Make sure there is a contour present and also its size is bigger than noise threshold.
     if contours and cv2.contourArea(max(contours, key = cv2.contourArea)) > noiseth:
                 
         c = max(contours, key = cv2.contourArea)    
@@ -74,15 +109,22 @@ while(1):
             x1,y1= x2,y2
             
         else:
-            # Draw the line on the canvas
-            canvas = cv2.line(canvas, (x1,y1),(x2,y2), [255,0,0], 5)
+            
+            if switch == 'Pen':
+                # Draw the line on the canvas
+                canvas = cv2.line(canvas, (x1,y1), (x2,y2), [255,0,0], 5)
+                
+            else:
+                cv2.circle(canvas, (x2, y2), 20, (0,0,0), -1)
+            
+            
         
         # After the line is drawn the new points become the previous points.
         x1,y1= x2,y2
         
-        # Now if the area is greater than the wiper threshold then set the clear variable to True and warn User.
+        # Now if the area is greater than the wiper threshold then set the clear variable to True
         if area > wiper_thresh:
-           cv2.putText(canvas,'Clearing Canvas',(100,200), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,255), 5, cv2.LINE_AA)
+           cv2.putText(canvas,'Clearing Canvas',(0,200), cv2.FONT_HERSHEY_SIMPLEX, 2, (0,0,255), 1, cv2.LINE_AA)
            clear = True 
 
     else:
@@ -91,18 +133,27 @@ while(1):
     
    
     # Now this piece of code is just for smooth drawing. (Optional)
-    _ ,mask = cv2.threshold(cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY), 20, 255, cv2.THRESH_BINARY)
+    _,mask = cv2.threshold(cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY), 20, 255, cv2.THRESH_BINARY)
     foreground = cv2.bitwise_and(canvas, canvas, mask = mask)
     background = cv2.bitwise_and(frame, frame, mask = cv2.bitwise_not(mask))
     frame = cv2.add(foreground,background)
 
-    cv2.imshow('image',frame)
     
+    # Switch the images depending upon what we're using, pen or eraser.
+    if switch != 'Pen':
+        cv2.circle(frame, (x1, y1), 20, (255,255,255), -1)
+        frame[0: 50, 0: 50] = eraser_img
+    else:
+        frame[0: 50, 0: 50] = pen_img
+
+    
+    cv2.imshow('image',frame)
+
     k = cv2.waitKey(5) & 0xFF
     if k == 27:
         break
     
-    # Clear the canvas after 1 second if the clear variable is true
+    # Clear the canvas after 1 second, if the clear variable is true
     if clear == True:
         
         time.sleep(1)
